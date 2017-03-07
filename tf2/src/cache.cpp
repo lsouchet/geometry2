@@ -294,6 +294,27 @@ ros::Time TimeCache::getOldestTimestamp()
   return storage_.back().stamp_;
 }
 
+bool tf2::TimeCache::clearFrame(tf2::CompactFrameID &id)
+{
+  for (L_TransformStorage::iterator it = storage_.begin(); it != storage_.end();
+       /*manual iteration*/)
+  {
+    if (it->child_frame_id_ == id)
+    {
+      it = storage_.erase(it);
+    }
+    else
+    {
+      if (it->frame_id_ == id)
+      {
+        it->frame_id_ = 0;
+      }
+      ++it;
+    }
+  }
+  return storage_.empty();
+}
+
 void TimeCache::pruneList()
 {
   ros::Time latest_time = storage_.begin()->stamp_;

@@ -103,6 +103,15 @@ public:
   /** \brief Clear all data */
   void clear();
 
+  /** \brief Clear a specified frame
+   * \param frame_id_str The string name of the frame that will be deleted.
+   * This function will:
+   *  - call clearFrame() on each TimeCacheInterface.
+   *  - Delete the entries corresponding to the target frame in frameIDs_,
+   * frameIDs_reverse and frame_authority_
+*/
+  void clearFrame(const std::string& frame_id_str);
+
   /** \brief Add transform information to the tf data structure
    * \param transform The transform to store
    * \param authority The source of the information for this transform
@@ -317,7 +326,7 @@ private:
   
   /** \brief The pointers to potential frames that the tree can be made of.
    * The frames will be dynamically allocated at run time when set the first time. */
-  typedef std::vector<TimeCacheInterfacePtr> V_TimeCacheInterface;
+  typedef std::map<CompactFrameID, TimeCacheInterfacePtr> V_TimeCacheInterface;
   V_TimeCacheInterface frames_;
   
   /** \brief A mutex to protect testing and allocating new frames on the above vector. */
@@ -327,7 +336,9 @@ private:
   typedef boost::unordered_map<std::string, CompactFrameID> M_StringToCompactFrameID;
   M_StringToCompactFrameID frameIDs_;
   /** \brief A map from CompactFrameID frame_id_numbers to string for debugging and output */
-  std::vector<std::string> frameIDs_reverse;
+  typedef std::map<CompactFrameID, std::string> CompactFrameIDToString;
+  std::map<CompactFrameID, std::string> frameIDs_reverse;
+  unsigned int frame_counter_;
   /** \brief A map to lookup the most recent authority for a given frame */
   std::map<CompactFrameID, std::string> frame_authority_;
 

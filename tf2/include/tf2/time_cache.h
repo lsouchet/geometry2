@@ -65,6 +65,12 @@ public:
   /** @brief Clear the list of stored values */
   virtual void clearList()=0;
 
+  /** @brief Clear a specific frame from the stored values
+   * \return true if the TimeCacheInterface does not contain data after this
+   * operation (for possible erasing).
+   */
+  virtual bool clearFrame(CompactFrameID& id) = 0;
+
   /** \brief Retrieve the parent at a specific time */
   virtual CompactFrameID getParent(ros::Time time, std::string* error_str) = 0;
 
@@ -83,6 +89,7 @@ public:
 
   /** @brief Get the oldest timestamp cached */
   virtual ros::Time getOldestTimestamp()=0;
+
 };
 
 typedef boost::shared_ptr<TimeCacheInterface> TimeCacheInterfacePtr;
@@ -106,6 +113,15 @@ class TimeCache : public TimeCacheInterface
   virtual bool getData(ros::Time time, TransformStorage & data_out, std::string* error_str = 0);
   virtual bool insertData(const TransformStorage& new_data);
   virtual void clearList();
+
+  /** This method will:
+   *  - remap the parent frame of a TransformStorage whose parent
+   * is the targeted frame to "NO_PARENT"
+   *  - erase the TransformStorage whose child frame is the targetedFrame.
+   * \param id the CompactFrameID of the frame to erase.
+   * \return true if the _storage buffer is empty after this operation.
+   */
+  bool clearFrame(CompactFrameID& id) override;
   virtual CompactFrameID getParent(ros::Time time, std::string* error_str);
   virtual P_TimeAndFrameID getLatestTimeAndParent();
 
@@ -113,7 +129,7 @@ class TimeCache : public TimeCacheInterface
   virtual unsigned int getListLength();
   virtual ros::Time getLatestTimestamp();
   virtual ros::Time getOldestTimestamp();
-  
+
 
 private:
   typedef std::list<TransformStorage> L_TransformStorage;
@@ -143,6 +159,12 @@ class StaticCache : public TimeCacheInterface
   virtual bool getData(ros::Time time, TransformStorage & data_out, std::string* error_str = 0); //returns false if data unavailable (should be thrown as lookup exception
   virtual bool insertData(const TransformStorage& new_data);
   virtual void clearList();
+   /**
+  * @brief Clear a specific frame from the stored values
+  * @param id the CompactFrameID of the frame to erase.
+  * @return true if the stored value has the specified id as child frame.
+  */
+  bool clearFrame(CompactFrameID& id) override;
   virtual CompactFrameID getParent(ros::Time time, std::string* error_str);
   virtual P_TimeAndFrameID getLatestTimeAndParent();
 
@@ -151,7 +173,6 @@ class StaticCache : public TimeCacheInterface
   virtual unsigned int getListLength();
   virtual ros::Time getLatestTimestamp();
   virtual ros::Time getOldestTimestamp();
-  
 
 private:
   TransformStorage  storage_;

@@ -162,14 +162,15 @@ CompactFrameID BufferCore::validateFrameId(const char* function_name_arg, const 
 }
 
 BufferCore::BufferCore(ros::Duration cache_time)
-: cache_time_(cache_time)
+: frame_counter_(0u)
+, cache_time_(cache_time)
 , transformable_callbacks_counter_(0)
 , transformable_requests_counter_(0)
 , using_dedicated_thread_(false)
 {
-  frameIDs_["NO_PARENT"] = 0;
-  frames_.push_back(TimeCacheInterfacePtr());
-  frameIDs_reverse.push_back("NO_PARENT");
+  unsigned int frame_id = frame_counter_++;
+  frameIDs_.insert(std::make_pair("NO_PARENT", frame_id));
+  frameIDs_reverse.insert(std::make_pair(frame_id, "NO_PARENT"));
 }
 
 BufferCore::~BufferCore()
@@ -183,15 +184,63 @@ void BufferCore::clear()
 
 
   boost::mutex::scoped_lock lock(frame_mutex_);
-  if ( frames_.size() > 1 )
+  if ( !frames_.empty() )
   {
-    for (std::vector<TimeCacheInterfacePtr>::iterator  cache_it = frames_.begin() + 1; cache_it != frames_.end(); ++cache_it)
+    for (V_TimeCacheInterface::iterator  cache_it = frames_.begin();
+         cache_it != frames_.end(); ++cache_it)
     {
-      if (*cache_it)
-        (*cache_it)->clearList();
+      if (cache_it->second)
+        (cache_it->second)->clearList();
     }
   }
-  
+
+}
+
+void BufferCore::clearFrame(const std::string& frame_id_str)
+{
+  boost::mutex::scoped_lock lock(frame_mutex_);
+  M_StringToCompactFrameID::iterator it = frameIDs_.find(frame_id_str);
+  if (it == frameIDs_.end())
+  {
+    std::cerr << "No matching frame " << frame_id_str << std::endl;
+    return;
+
+  }
+  CompactFrameID frame_compact_id = it->second;
+  if (!frames_.empty())
+  {
+    TransformStorage tmp;
+    for (V_TimeCacheInterface::iterator cache_it = frames_.begin();
+         cache_it != frames_.end(); )
+    {
+      if (cache_it->second)
+      {
+        if (cache_it->second->clearFrame(frame_compact_id))
+        {
+          cache_it = frames_.erase(cache_it);
+          continue;
+        }
+      }
+      ++cache_it;
+    }
+  }
+  for  (CompactFrameIDToString::iterator reverse_it = frameIDs_reverse.begin();
+        reverse_it != frameIDs_reverse.end(); ++reverse_it)
+  {
+    if (reverse_it->second == frame_id_str)
+    {
+      frameIDs_reverse.erase(reverse_it);
+      break;
+    }
+  }
+  std::map<CompactFrameID, std::string>::iterator authority_it =
+      frame_authority_.find(frame_compact_id);
+  if (authority_it != frame_authority_.end())
+  {
+    frame_authority_.erase(authority_it);
+  }
+  frameIDs_.erase(it);
+  testTransformableRequests();
 }
 
 bool BufferCore::setTransform(const geometry_msgs::TransformStamped& transform_in, const std::string& authority, bool is_static)
@@ -282,14 +331,26 @@ bool BufferCore::setTransform(const geometry_msgs::TransformStamped& transform_i
 
 TimeCacheInterfacePtr BufferCore::allocateFrame(CompactFrameID cfid, bool is_static)
 {
-  TimeCacheInterfacePtr frame_ptr = frames_[cfid];
-  if (is_static) {
-    frames_[cfid] = TimeCacheInterfacePtr(new StaticCache());
-  } else {
-    frames_[cfid] = TimeCacheInterfacePtr(new TimeCache(cache_time_));
+  V_TimeCacheInterface::iterator it = frames_.find(cfid);
+  TimeCacheInterfacePtr newFrame;
+  if (is_static)
+  {
+    newFrame = TimeCacheInterfacePtr(new StaticCache());
+  }
+  else
+  {
+    newFrame = TimeCacheInterfacePtr(new TimeCache(cache_time_));
+  }
+  if (it != frames_.end())
+  {
+    frames_.at(cfid) = newFrame;
+  }
+  else
+  {
+    frames_.insert(std::make_pair(cfid, newFrame));
   }
 
-  return frames_[cfid];
+  return frames_.at(cfid);
 }
 
 enum WalkEnding
@@ -803,11 +864,12 @@ bool BufferCore::canTransform(const std::string& target_frame, const ros::Time& 
 
 tf2::TimeCacheInterfacePtr BufferCore::getFrame(CompactFrameID frame_id) const
 {
-  if (frame_id >= frames_.size())
+  V_TimeCacheInterface::const_iterator it = frames_.find(frame_id);
+  if (it == frames_.end())
     return TimeCacheInterfacePtr();
   else
   {
-    return frames_[frame_id];
+    return it->second;
   }
 }
 
@@ -830,10 +892,10 @@ CompactFrameID BufferCore::lookupOrInsertFrameNumber(const std::string& frameid_
   M_StringToCompactFrameID::iterator map_it = frameIDs_.find(frameid_str);
   if (map_it == frameIDs_.end())
   {
-    retval = CompactFrameID(frames_.size());
-    frames_.push_back(TimeCacheInterfacePtr());//Just a place holder for iteration
-    frameIDs_[frameid_str] = retval;
-    frameIDs_reverse.push_back(frameid_str);
+    retval = CompactFrameID(frame_counter_++);
+    frames_.insert(std::make_pair(retval, TimeCacheInterfacePtr()));//Just a place holder for iteration
+    frameIDs_.insert(std::make_pair(frameid_str, retval));
+    frameIDs_reverse.insert(std::make_pair(retval, frameid_str));
   }
   else
     retval = frameIDs_[frameid_str];
@@ -843,14 +905,15 @@ CompactFrameID BufferCore::lookupOrInsertFrameNumber(const std::string& frameid_
 
 const std::string& BufferCore::lookupFrameString(CompactFrameID frame_id_num) const
 {
-    if (frame_id_num >= frameIDs_reverse.size())
+    CompactFrameIDToString::const_iterator frameIt = frameIDs_reverse.find(frame_id_num);
+    if (frameIt == frameIDs_reverse.end())
     {
       std::stringstream ss;
       ss << "Reverse lookup of frame id " << frame_id_num << " failed!";
       throw tf2::LookupException(ss.str());
     }
     else
-      return frameIDs_reverse[frame_id_num];
+      return frameIDs_reverse.at(frame_id_num);
 }
 
 void BufferCore::createConnectivityErrorString(CompactFrameID source_frame, CompactFrameID target_frame, std::string* out) const
@@ -873,25 +936,32 @@ std::string BufferCore::allFramesAsString() const
 std::string BufferCore::allFramesAsStringNoLock() const
 {
   std::stringstream mstream;
-
   TransformStorage temp;
-
-  //  for (std::vector< TimeCache*>::iterator  it = frames_.begin(); it != frames_.end(); ++it)
-
-  ///regular transforms
-  for (unsigned int counter = 1; counter < frames_.size(); counter ++)
+  for (V_TimeCacheInterface::const_iterator cache_it = frames_.begin();
+       cache_it != frames_.end(); ++cache_it)
   {
-    TimeCacheInterfacePtr frame_ptr = getFrame(CompactFrameID(counter));
+    CompactFrameID compactFID(cache_it->first);
+    TimeCacheInterfacePtr frame_ptr = cache_it->second;
     if (frame_ptr == NULL)
       continue;
     CompactFrameID frame_id_num;
+    CompactFrameID child_id_num;
     if(  frame_ptr->getData(ros::Time(), temp))
+    {
       frame_id_num = temp.frame_id_;
+      child_id_num = temp.child_frame_id_;
+    }
     else
     {
       frame_id_num = 0;
     }
-    mstream << "Frame "<< frameIDs_reverse[counter] << " exists with parent " << frameIDs_reverse[frame_id_num] << "." <<std::endl;
+    try {
+      mstream << "Frame "<< child_id_num << " (" << frameIDs_reverse.at(child_id_num)<< ") exists with parent " <<
+                 frame_id_num << " (" << frameIDs_reverse.at(frame_id_num) << "." << ") at " <<
+                 temp.stamp_.toSec() << std::endl;
+    } catch (const std::exception& e) {
+      mstream << "Unknown frame " << compactFID << " or " << frame_id_num << std::endl;
+    }
   }
 
   return mstream.str();
@@ -1093,10 +1163,10 @@ std::string BufferCore::allFramesAsYAML(double current_time) const
   mstream.precision(3);
   mstream.setf(std::ios::fixed,std::ios::floatfield);
 
-   //  for (std::vector< TimeCache*>::iterator  it = frames_.begin(); it != frames_.end(); ++it)
-  for (unsigned int counter = 1; counter < frames_.size(); counter ++)//one referenced for 0 is no frame
+  for (V_TimeCacheInterface::const_iterator frame_it = frames_.begin();
+       frame_it != frames_.end(); ++frame_it)
   {
-    CompactFrameID cfid = CompactFrameID(counter);
+    CompactFrameID cfid = CompactFrameID(frame_it->first);
     CompactFrameID frame_id_num;
     TimeCacheInterfacePtr cache = getFrame(cfid);
     if (!cache)
@@ -1122,8 +1192,8 @@ std::string BufferCore::allFramesAsYAML(double current_time) const
 
     mstream << std::fixed; //fixed point notation
     mstream.precision(3); //3 decimal places
-    mstream << frameIDs_reverse[cfid] << ": " << std::endl;
-    mstream << "  parent: '" << frameIDs_reverse[frame_id_num] << "'" << std::endl;
+    mstream << frameIDs_reverse.at(cfid) << ": " << std::endl;
+    mstream << "  parent: '" << frameIDs_reverse.at(frame_id_num) << "'" << std::endl;
     mstream << "  broadcaster: '" << authority << "'" << std::endl;
     mstream << "  rate: " << rate << std::endl;
     mstream << "  most_recent_transform: " << (cache->getLatestTimestamp()).toSec() << std::endl;
@@ -1313,7 +1383,7 @@ void BufferCore::_getFrameStrings(std::vector<std::string> & vec) const
   //  for (std::vector< TimeCache*>::iterator  it = frames_.begin(); it != frames_.end(); ++it)
   for (unsigned int counter = 1; counter < frameIDs_reverse.size(); counter ++)
   {
-    vec.push_back(frameIDs_reverse[counter]);
+    vec.push_back(frameIDs_reverse.at(counter));
   }
   return;
 }
@@ -1404,10 +1474,11 @@ std::string BufferCore::_allFramesAsDot(double current_time) const
   mstream.precision(3);
   mstream.setf(std::ios::fixed,std::ios::floatfield);
 
-  for (unsigned int counter = 1; counter < frames_.size(); counter ++) // one referenced for 0 is no frame
+  for (V_TimeCacheInterface::const_iterator cache_it = frames_.begin();
+       cache_it != frames_.end(); ++cache_it)
   {
     unsigned int frame_id_num;
-    TimeCacheInterfacePtr counter_frame = getFrame(counter);
+    TimeCacheInterfacePtr counter_frame = cache_it->second;
     if (!counter_frame) {
       continue;
     }
@@ -1417,7 +1488,8 @@ std::string BufferCore::_allFramesAsDot(double current_time) const
       frame_id_num = temp.frame_id_;
     }
     std::string authority = "no recorded authority";
-    std::map<unsigned int, std::string>::const_iterator it = frame_authority_.find(counter);
+    std::map<unsigned int, std::string>::const_iterator it =
+        frame_authority_.find(cache_it->first);
     if (it != frame_authority_.end())
       authority = it->second;
 
@@ -1426,8 +1498,8 @@ std::string BufferCore::_allFramesAsDot(double current_time) const
 
     mstream << std::fixed; //fixed point notation
     mstream.precision(3); //3 decimal places
-    mstream << "\"" << frameIDs_reverse[frame_id_num] << "\"" << " -> "
-            << "\"" << frameIDs_reverse[counter] << "\"" << "[label=\""
+    mstream << "\"" << frameIDs_reverse.at(frame_id_num) << "\"" << " -> "
+            << "\"" << frameIDs_reverse.at(cache_it->first) << "\"" << "[label=\""
       //<< "Time: " << current_time.toSec() << "\\n"
             << "Broadcaster: " << authority << "\\n"
             << "Average rate: " << rate << " Hz\\n"
@@ -1441,33 +1513,33 @@ std::string BufferCore::_allFramesAsDot(double current_time) const
             << "Buffer length: " << (counter_frame->getLatestTimestamp()-counter_frame->getOldestTimestamp()).toSec() << " sec\\n"
             <<"\"];" <<std::endl;
   }
-
-  for (unsigned int counter = 1; counter < frames_.size(); counter ++)//one referenced for 0 is no frame
+  for (V_TimeCacheInterface::const_iterator frame_it = frames_.begin();
+       frame_it != frames_.end(); ++frame_it)
   {
     unsigned int frame_id_num;
-    TimeCacheInterfacePtr counter_frame = getFrame(counter);
+    TimeCacheInterfacePtr counter_frame = frame_it->second;
     if (!counter_frame) {
       if (current_time > 0) {
         mstream << "edge [style=invis];" <<std::endl;
         mstream << " subgraph cluster_legend { style=bold; color=black; label =\"view_frames Result\";\n"
                 << "\"Recorded at time: " << current_time << "\"[ shape=plaintext ] ;\n "
-                << "}" << "->" << "\"" << frameIDs_reverse[counter] << "\";" << std::endl;
+                << "}" << "->" << "\"" << frameIDs_reverse.at(frame_it->first) << "\";" << std::endl;
       }
       continue;
     }
     if (counter_frame->getData(ros::Time(), temp)) {
       frame_id_num = temp.frame_id_;
     } else {
-    	frame_id_num = 0;
+      frame_id_num = 0;
     }
 
-    if(frameIDs_reverse[frame_id_num]=="NO_PARENT")
+    if(frameIDs_reverse.at(frame_id_num)=="NO_PARENT")
     {
       mstream << "edge [style=invis];" <<std::endl;
       mstream << " subgraph cluster_legend { style=bold; color=black; label =\"view_frames Result\";\n";
       if (current_time > 0)
         mstream << "\"Recorded at time: " << current_time << "\"[ shape=plaintext ] ;\n ";
-      mstream << "}" << "->" << "\"" << frameIDs_reverse[counter] << "\";" << std::endl;
+      mstream << "}" << "->" << "\"" << frameIDs_reverse.at(frame_it->first) << "\";" << std::endl;
     }
   }
   mstream << "}";
