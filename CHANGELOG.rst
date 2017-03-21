@@ -2,6 +2,10 @@
 Changelog for package tf2
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.5.16 (2017-03-17)
+---------------------
+* add erase() function to erase a frame from the buffer_core.
+
 0.5.15 (2017-01-24)
 -------------------
 
